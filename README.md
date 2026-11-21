@@ -11,4 +11,5 @@ Hands-free FHIR R4 clinical backend for smart glasses. Scans patient QR codes to
 * `main.py` — FastAPI server (FHIR endpoints, openFDA barcode lookup, voice notes)
 * `build_db.py` / `ehr.db` — Synthetic FHIR R4 ingestion script and SQLite database
 * `make_qr.py` / `qr_codes/` — Patient QR code generator and scannable demo codes
+* ![Scannable Patient Wristband](qr_codes/wristband_FHIR-00001.png)
   
