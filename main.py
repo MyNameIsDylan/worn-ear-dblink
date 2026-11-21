@@ -198,4 +198,4 @@ def check_med_for_patient(patient_id: str, barcode: str):
             "header": f"{med['brand_name']} vs {patient_id}",
             "safety_verdict": verdict,
         },
-        "phone_detail": {"medication": med, "patient_summary": record},
+        "phone_detail": {"medication": med, "patient_summary": record},}
