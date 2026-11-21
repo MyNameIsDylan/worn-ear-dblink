@@ -1,11 +1,14 @@
 import os
 import json
 import sqlite3
+import urllib.request
+import urllib.error
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from google import genai
+
 
 load_dotenv()
 app = FastAPI(title="Worn Clinical EHR API")
@@ -130,3 +133,69 @@ def ask_patient(patient_id: str, req: AskRequest):
     )
     resp = gemini_client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
     return {"patient_id": patient_id, "hud_answer": resp.text.strip()}
+
+def lookup_barcode(barcode: str) -> dict:
+    clean_code = barcode.strip()
+    if clean_code in DEMO_MEDS:
+        return {"barcode": clean_code, "source": "local_demo", **DEMO_MEDS[clean_code]}
+
+    url = f'https://api.fda.gov/drug/label.json?search=openfda.upc:"{clean_code}"&limit=1'
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            item = data["results"][0]
+            openfda = item.get("openfda", {})
+            brand = (openfda.get("brand_name") or openfda.get("generic_name") or ["Unknown Medication"])[0]
+            ingredient = (item.get("active_ingredient") or openfda.get("substance_name") or ["N/A"])[0]
+            warnings = (item.get("warnings") or item.get("boxed_warning") or ["No FDA warnings listed"])[0]
+            return {
+                "barcode": clean_code,
+                "source": "openFDA",
+                "brand_name": brand,
+                "active_ingredient": ingredient[:120],
+                "warnings": warnings[:250],
+            }
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Barcode {clean_code} not found in openFDA")
+
+
+@app.get("/med/{barcode}")
+def get_medication(barcode: str):
+    """Standalone medicine barcode lookup (no patient required)."""
+    med = lookup_barcode(barcode)
+    return {
+        "glasses_hud": {
+            "header": med["brand_name"],
+            "ingredient": med["active_ingredient"],
+            "alert": med["warnings"][:90],
+        },
+        "phone_detail": med,
+    }
+
+
+@app.get("/patient/{patient_id}/check-med/{barcode}")
+def check_med_for_patient(patient_id: str, barcode: str):
+    """Cross-checks a scanned OTC/Rx medicine against a patient's EHR."""
+    record = fetch_patient_record(patient_id)["phone_detail"]
+    med = lookup_barcode(barcode)
+
+    # Default quick response if Gemini isn't configured
+    verdict = f"Scanned {med['brand_name']}. Review warnings against patient chart."
+
+    if gemini_client:
+        prompt = (
+            "You are a clinical safety assistant on smart glasses. "
+            "In ONE short sentence (max 15 words), state whether this scanned medication is SAFE or a RISK "
+            "for this patient based on their conditions, labs (like eGFR/BP), and active meds:\n"
+            f"Medication: {json.dumps(med)}\nPatient: {json.dumps(record)}"
+        )
+        resp = gemini_client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        verdict = resp.text.strip()
+
+    return {
+        "patient_id": patient_id,
+        "glasses_hud": {
+            "header": f"{med['brand_name']} vs {patient_id}",
+            "safety_verdict": verdict,
+        },
+        "phone_detail": {"medication": med, "patient_summary": record},
